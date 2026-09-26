@@ -1,0 +1,58 @@
+name: Sync with upstream
+
+# Keeps this fork a pure mirror of openai/codex: every branch and tag is
+# overwritten to match upstream, and refs deleted upstream are pruned locally.
+#
+# Note: scheduled workflows only run on the default branch, and the mirror
+# push below resets main to upstream. The final step re-adds this workflow
+# file on top of upstream main so the schedule keeps working.
+on:
+  schedule:
+    # Hourly at :13 to stay off the top-of-the-hour herd.
+    - cron: "13 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # GITHUB_TOKEN can never modify workflow files, but this job must
+          # push the workflow file back onto main after the mirror reset.
+          # Provide a classic PAT (repo + workflow scopes) as the SYNC_PAT
+          # repository secret; falls back to GITHUB_TOKEN until then.
+          token: ${{ secrets.SYNC_PAT || github.token }}
+
+      - name: Fetch upstream (openai/codex)
+        run: |
+          git remote add upstream https://github.com/openai/codex.git
+          git fetch upstream --prune --prune-tags --force \
+            '+refs/heads/*:refs/remotes/upstream/heads/*' \
+            '+refs/tags/*:refs/tags/*'
+
+      - name: Mirror branches and tags to origin
+        run: |
+          git push --force --prune origin \
+            '+refs/remotes/upstream/heads/*:refs/heads/*' \
+            '+refs/tags/*:refs/tags/*'
+
+      - name: Restore this workflow on main
+        run: |
+          cp .github/workflows/sync-upstream.yml /tmp/sync-upstream.yml
+          git checkout -B main origin/main
+          mkdir -p .github/workflows
+          cp /tmp/sync-upstream.yml .github/workflows/sync-upstream.yml
+          git add .github/workflows/sync-upstream.yml
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "chore: keep upstream-sync workflow on main" \
+            || echo "workflow file already up to date"
+          git push origin main
